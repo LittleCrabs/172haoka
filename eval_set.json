@@ -1,0 +1,164 @@
+[
+  {
+    "q": "首充要充多少",
+    "as": "customer",
+    "kind": "chunk",
+    "expect": "首充要充多少"
+  },
+  {
+    "q": "照片怎么拍才能过审",
+    "as": "customer",
+    "kind": "chunk",
+    "expect": "照片怎么拍"
+  },
+  {
+    "q": "收货地址怎么填才不会被拦",
+    "as": "customer",
+    "kind": "chunk",
+    "expect": "收货地址怎么填"
+  },
+  {
+    "q": "多久能发货",
+    "as": "customer",
+    "kind": "chunk",
+    "expect": "多久能发货"
+  },
+  {
+    "q": "怎么查物流",
+    "as": "customer",
+    "kind": "chunk",
+    "expect": "怎么查物流"
+  },
+  {
+    "q": "卡到了怎么激活",
+    "as": "customer",
+    "kind": "chunk",
+    "expect": "卡到了怎么激活"
+  },
+  {
+    "q": "合约期多久",
+    "as": "customer",
+    "kind": "chunk",
+    "expect": "合约期多久"
+  },
+  {
+    "q": "一证五户是什么意思",
+    "as": "customer",
+    "kind": "chunk",
+    "expect": "一证五户"
+  },
+  {
+    "q": "能不能办副卡",
+    "as": "customer",
+    "kind": "chunk",
+    "expect": "能办副卡"
+  },
+  {
+    "q": "为什么刚激活没有5G信号",
+    "as": "customer",
+    "kind": "chunk",
+    "expect": "5G"
+  },
+  {
+    "q": "卡怎么注销",
+    "as": "customer",
+    "kind": "chunk",
+    "expect": "注销"
+  },
+  {
+    "q": "29元以内200G以上的广电卡",
+    "as": "customer",
+    "kind": "product",
+    "expect": "广电"
+  },
+  {
+    "q": "39元200G的联通卡",
+    "as": "customer",
+    "kind": "product",
+    "expect": "联通"
+  },
+  {
+    "q": "山东济南的宽带",
+    "as": "customer",
+    "kind": "product",
+    "expect": "济南"
+  },
+  {
+    "q": "联通先激活后发货怎么查单",
+    "as": "agent",
+    "kind": "chunk",
+    "expect": "联通先激活后发货"
+  },
+  {
+    "q": "佣金怎么结算",
+    "as": "agent",
+    "kind": "chunk",
+    "expect": "结算"
+  },
+  {
+    "q": "客户下单失败有哪些原因",
+    "as": "agent",
+    "kind": "chunk",
+    "expect": "失败原因"
+  },
+  {
+    "q": "黑名单怎么解除",
+    "as": "agent",
+    "kind": "chunk",
+    "expect": "黑名单"
+  },
+  {
+    "q": "套餐什么时候到账",
+    "as": "agent",
+    "kind": "chunk",
+    "expect": "到账"
+  },
+  {
+    "q": "广电飞花卡套外资费",
+    "as": "customer",
+    "kind": "chunk",
+    "expect": "飞花卡"
+  },
+  {
+    "q": "联通飞豹卡合约期",
+    "as": "customer",
+    "kind": "chunk",
+    "expect": "飞豹卡"
+  },
+  {
+    "q": "流量是通用还是定向",
+    "as": "customer",
+    "kind": "chunk",
+    "expect": "定向"
+  },
+  {
+    "q": "合约期内能注销吗",
+    "as": "customer",
+    "kind": "chunk",
+    "expect": "合约期"
+  },
+  {
+    "q": "新疆西藏能发吗",
+    "as": "customer",
+    "kind": "chunk",
+    "expect": "新疆西藏"
+  },
+  {
+    "q": "能不能异地使用",
+    "as": "customer",
+    "kind": "chunk",
+    "expect": "异地"
+  },
+  {
+    "q": "有靓号吗",
+    "as": "customer",
+    "kind": "chunk",
+    "expect": "靓号"
+  },
+  {
+    "q": "宽带怎么装",
+    "as": "customer",
+    "kind": "chunk",
+    "expect": "宽带"
+  }
+]
