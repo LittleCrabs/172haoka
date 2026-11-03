@@ -17,9 +17,17 @@ def get_conn():
 NEEDED_COLUMNS = {
     "kb_docs": [("audience", "TEXT DEFAULT 'agent'")],
     "kb_chunks": [("audience", "TEXT DEFAULT 'agent'")],
-    "products": [("category", "TEXT"), ("detail_url", "TEXT"), ("create_time", "TEXT"), ("exclusive_url", "TEXT")],
+    "products": [("category", "TEXT"), ("detail_url", "TEXT"), ("create_time", "TEXT"), ("exclusive_url", "TEXT"), ("sync_source", "TEXT")],
     "product_changes": [("batch_id", "TEXT")],
-    "xhs_replies": [("tone", "TEXT")],
+    # product_* / order_url：这条回复「实际上推的是哪张卡」。回复正文按合规要求
+    # 不点名、不带链接，所以卡是「后台替你选的」，落地成客户下单链接供跟进用。
+    "xhs_replies": [("tone", "TEXT"), ("delivered_at", "TEXT"),
+                    ("product_id", "INTEGER"), ("product_name", "TEXT"),
+                    ("order_url", "TEXT"), ("product_fee", "INTEGER"),
+                    ("product_data", "INTEGER"), ("product_operator", "TEXT")],
+    # 同步日志原本只记手机卡一条通道，宽带同步根本不写日志，
+    # 结果「上次同步成功了吗」只能去更新日志里反推。加个 kind 区分通道。
+    "crawl_log": [("kind", "TEXT DEFAULT '手机卡'")],
 }
 
 

@@ -6,7 +6,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from .. import config
-from ..services import ask as ask_svc
+from ..services import ask as ask_svc, llm as llm_svc
 
 router = APIRouter(prefix="/api", tags=["ask"])
 
@@ -15,6 +15,8 @@ class AskIn(BaseModel):
     q: str
     audience: str = "agent"
     dry_run: bool = False
+    # 前几轮问答 [{q, a}]，用于多轮记忆；不传就是单轮，跟原来一样
+    history: list[dict] | None = None
 
 
 def _sse(obj):
@@ -23,16 +25,17 @@ def _sse(obj):
 
 @router.post("/ask")
 def do_ask(req: AskIn):
-    return ask_svc.ask(req.q, dry_run=req.dry_run, audience=req.audience)
+    return ask_svc.ask(req.q, dry_run=req.dry_run, audience=req.audience,
+                       history=req.history)
 
 
 @router.post("/ask/stream")
 def do_ask_stream(req: AskIn):
     """流式问答：先推 sources，再逐段推 delta，最后 [DONE]。"""
-    system, user, sources = ask_svc.build_prompt(req.q, req.audience)
+    system, user, sources, meta = ask_svc.build_prompt(req.q, req.audience, req.history)
 
     def gen():
-        yield _sse({"type": "sources", "sources": sources})
+        yield _sse({"type": "sources", "sources": sources, **meta})
         if not config.llm_cfg().get("api_key"):
             yield _sse({"type": "error",
                         "error": "未配置大模型（请在设置页填写 LLM 的 base_url / model / api_key）"})
@@ -41,7 +44,7 @@ def do_ask_stream(req: AskIn):
         try:
             messages = [{"role": "system", "content": system},
                         {"role": "user", "content": user}]
-            for delta in ask_svc.call_llm_stream(messages):
+            for delta in llm_svc.call_llm_stream(messages):
                 yield _sse({"type": "delta", "content": delta})
         except Exception as e:
             yield _sse({"type": "error", "error": str(e)})

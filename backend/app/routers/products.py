@@ -135,14 +135,65 @@ def spec_stats():
         conn.close()
 
 
+COLLAPSE_MIN = 5        # 同批次、同字段、同「旧值→新值」达到这么多条才折叠
+COLLAPSE_SCAN_MAX = 20000  # 折叠要看全量才能算准条数，给个上限兜底
+
+
+def _collapse_changes(rows):
+    """把一次同步里的大批量同质变更折叠成一行。
+
+    背景：更新日志本该回答「昨天改了什么」，但一次代码升级把 869 个商品的
+    commission_type 从 '0' 纠正成 '秒返'，占满整页，真正那条「在售→下架」
+    反而被埋掉。这类同批次、同字段、同变化的记录对人是没有信息量的，
+    折成一条「本批 N 个商品」摘要即可，需要看具体是哪些再点开。
+
+    判定条件全部为真才折叠：有 batch_id、字段相同、旧值相同、新值相同、条数达阈值。
+    """
+    groups = {}
+    for r in rows:
+        b = r["batch_id"]
+        if not b:
+            continue  # 没有批次号的（早期数据）保持逐条显示
+        key = (b, r["field"], r["old_value"], r["new_value"])
+        g = groups.get(key)
+        if g is None:
+            g = groups[key] = {"count": 0, "samples": []}
+        g["count"] += 1
+        if len(g["samples"]) < 3 and r["product_name"]:
+            g["samples"].append(r["product_name"])
+
+    out, emitted = [], set()
+    for r in rows:
+        d = dict(r)
+        b = r["batch_id"]
+        key = (b, r["field"], r["old_value"], r["new_value"]) if b else None
+        g = groups.get(key) if key else None
+        if g and g["count"] >= COLLAPSE_MIN:
+            if key in emitted:
+                continue
+            emitted.add(key)
+            d.update({"kind": "summary", "count": g["count"],
+                      "samples": g["samples"], "product_name": None,
+                      "product_id": None})
+        else:
+            d["kind"] = "detail"
+        out.append(d)
+    return out
+
+
 @router.get("/changes")
 def list_changes(
     category: str = None,
     q: str = None,
     limit: int = 200,
     page: int = 1,
+    collapse: int = 1,
 ):
-    """更新日志：返回最近的字段级变更（join products 取商品名/品类）。"""
+    """更新日志：返回最近的字段级变更（join products 取商品名/品类）。
+
+    collapse=1（默认）时把同批次的批量同质变更折叠成摘要行，
+    避免一次批量修正把真正的业务变更挤出视野；传 0 看逐条明细。
+    """
     conn = database.get_conn()
     try:
         where, args = [], []
@@ -155,14 +206,55 @@ def list_changes(
             args += [kw, kw]
         wsql = ("WHERE " + " AND ".join(where)) if where else ""
         base = "FROM product_changes c LEFT JOIN products p ON p.product_id=c.product_id "
+        order = "ORDER BY c.changed_at DESC, c.id DESC"
+
+        if not collapse:
+            total = conn.execute("SELECT count(*) " + base + wsql, args).fetchone()[0]
+            rows = conn.execute(
+                "SELECT c.id, c.product_id, c.field, c.old_value, c.new_value, c.changed_at, "
+                "c.batch_id, p.product_name, p.category " + base + wsql + order +
+                " LIMIT ? OFFSET ?",
+                args + [limit, (page - 1) * limit]).fetchall()
+            return {"total": total, "items": [dict(r) for r in rows],
+                    "page": page, "page_size": limit, "collapsed": False}
+
+        # 折叠必须基于全量：先按明细 limit 再折叠，条目数会和 total 对不上
+        rows = conn.execute(
+            "SELECT c.id, c.product_id, c.field, c.old_value, c.new_value, c.changed_at, "
+            "c.batch_id, p.product_name, p.category " + base + wsql + order + " LIMIT ?",
+            args + [COLLAPSE_SCAN_MAX]).fetchall()
+        items = _collapse_changes(rows)
+        total = len(items)
+        start = (page - 1) * limit
+        return {"total": total, "items": items[start:start + limit],
+                "page": page, "page_size": limit, "collapsed": True,
+                "truncated": len(rows) >= COLLAPSE_SCAN_MAX}
+    finally:
+        conn.close()
+
+
+@router.get("/changes/expand")
+def expand_change(batch_id: str, field: str,
+                  old_value: str = None, new_value: str = None, limit: int = 500):
+    """展开一条被折叠的批量变更，列出它包含的具体商品。"""
+    conn = database.get_conn()
+    try:
+        where = ["c.batch_id = ?", "c.field = ?"]
+        args = [batch_id, field]
+        if old_value is not None:
+            where.append("c.old_value IS ?")
+            args.append(old_value)
+        if new_value is not None:
+            where.append("c.new_value IS ?")
+            args.append(new_value)
+        wsql = "WHERE " + " AND ".join(where)
+        base = "FROM product_changes c LEFT JOIN products p ON p.product_id=c.product_id "
         total = conn.execute("SELECT count(*) " + base + wsql, args).fetchone()[0]
         rows = conn.execute(
-            "SELECT c.id, c.product_id, c.field, c.old_value, c.new_value, c.changed_at, c.batch_id, "
-            "p.product_name, p.category " + base + wsql +
-            "ORDER BY c.changed_at DESC, c.id DESC LIMIT ? OFFSET ?",
-            args + [limit, (page - 1) * limit]).fetchall()
-        return {"total": total, "items": [dict(r) for r in rows],
-                "page": page, "page_size": limit}
+            "SELECT c.id, c.product_id, c.field, c.old_value, c.new_value, c.changed_at, "
+            "c.batch_id, p.product_name, p.category, p.on_sale " + base + wsql +
+            " ORDER BY p.product_name LIMIT ?", args + [limit]).fetchall()
+        return {"total": total, "items": [dict(r) for r in rows]}
     finally:
         conn.close()
 

@@ -23,13 +23,66 @@ def parse_speed(name):
     return int(m.group(1)) if m else None
 
 
-_FEE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*元\s*(?:/|包)?\s*(年|月|年\)|/年|/月)?", re.I)
+# 宽带接口不下发价格：price 恒为 0.0，priceRead 恒为「¥0.00」。
+# 真实资费只写在商品名里，写法五花八门，能确定语义的才解析，猜不准的一律留空：
+#   600元/年     540元包年     360包年     59/月         ← 单期
+#   960元2年     1200元包1年    2160元包3年              ← 多期总价
+#   （「199元FTTR」「59元融合宽带」这类光有金额没有周期词，可能是月租也可能是
+#     一次性费用，不猜，显示「—」，免得又造出一列看着像真的假数据）
+_PRICE_MULTI_RE = re.compile(r"(\d+(?:\.\d+)?)\s*元\s*包?\s*(\d{1,2})\s*个?\s*(年|月)")
+_PRICE_PATTERNS = (
+    re.compile(r"(\d+(?:\.\d+)?)\s*元\s*(?:包|/|每)?\s*(年|月)"),
+    re.compile(r"(\d+(?:\.\d+)?)\s*包\s*(年|月)"),
+    re.compile(r"(\d+(?:\.\d+)?)\s*/\s*(年|月)"),
+)
+_ZERO_PRICE_RE = re.compile(r"^[¥￥]?\s*0+(?:\.0+)?\s*(?:元)?$")
+
+
+def parse_price(name):
+    """从商品名解析资费，返回 (金额, 周期标签)；解析不出返回 (None, None)。
+
+    周期标签是 "年" / "月" 或 "3年" 这种多期总价的写法，由调用方直接拼进文案。
+    宁可返回 None 显示「—」，也不能把接口下发的 0 当成真实价格展示。
+    """
+    s = name or ""
+    m = _PRICE_MULTI_RE.search(s)
+    if m:
+        try:
+            v, n = float(m.group(1)), int(m.group(2))
+        except ValueError:
+            v, n = 0, 0
+        if v > 0 and 1 <= n <= 10:
+            label = m.group(3) if n == 1 else "%d%s" % (n, m.group(3))
+            return (int(v) if v.is_integer() else v), label
+    for rx in _PRICE_PATTERNS:
+        m = rx.search(s)
+        if not m:
+            continue
+        try:
+            v = float(m.group(1))
+        except ValueError:
+            continue
+        if v <= 0:
+            continue
+        return (int(v) if v.is_integer() else v), m.group(2)
+    return None, None
 
 
 def parse_fee(name):
-    """从商品名解析年费 / 月费数值（如 399元/年、59/月），返回数值或 None。"""
-    m = _FEE_RE.search(name or "")
-    return float(m.group(1)) if m else None
+    """只要金额（价格区间筛选用）。"""
+    return parse_price(name)[0]
+
+
+def _valid_price_read(v):
+    """接口给的 priceRead 是「¥0.00」这种占位值时视为没有价格。"""
+    s = (v or "").strip()
+    if not s or _ZERO_PRICE_RE.match(s):
+        return None
+    return s
+
+
+def _num(v):
+    return str(int(v)) if float(v).is_integer() else ("%g" % v)
 
 
 def _build_item(r, h5):
@@ -37,6 +90,21 @@ def _build_item(r, h5):
     raw = json.loads(r["raw_json"]) if r["raw_json"] else {}
     name = raw.get("productName") or r["product_name"] or ""
     pid_str = raw.get("productIDStr")
+
+    # 价格：平台只给 0，名称里才有真资费
+    fee, period = parse_price(name)
+    price_read = _valid_price_read(raw.get("priceRead"))
+    price_val = raw.get("price")
+    if not isinstance(price_val, (int, float)) or price_val <= 0:
+        price_val = None
+    if price_read:
+        price_source = "platform"
+    elif fee is not None:
+        price_read = "¥%s/%s" % (_num(fee), period)
+        price_source = "name"
+    else:
+        price_source = None
+
     return {
         "product_id": r["product_id"],
         "product_id_str": pid_str,
@@ -45,8 +113,10 @@ def _build_item(r, h5):
         "flag": bool(r["on_sale"]),            # 本地上架状态（= 已同步的 flag）
         "low_flag": bool(raw.get("lowFlag")),
         "speed": parse_speed(name),
-        "price": raw.get("price"),
-        "price_read": raw.get("priceRead"),
+        "price": price_val,
+        "price_read": price_read,
+        "price_source": price_source,
+        "price_period": period,
         "s_price": raw.get("sPrice"),
         "s_price_read": raw.get("sPriceRead"),
         "commission_type": raw.get("commissionType"),
@@ -188,6 +258,37 @@ def toggle_kuanpro(body: dict):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/kuanpro/toggle-batch")
+def toggle_kuanpro_batch(body: dict):
+    """批量上架 / 下架。选品广场有 800 多条未上架，逐条点不现实。
+
+    body: { product_ids: [int], on_sale: bool }
+    逐条转发后台，单条失败不中断，最后返回成功/失败明细——批量操作最怕
+    「点一下全没了却不知道哪条失败」。
+    """
+    ids = body.get("product_ids") or []
+    if not isinstance(ids, list) or not ids:
+        raise HTTPException(status_code=400, detail="没有选中商品")
+    if len(ids) > 200:
+        raise HTTPException(status_code=400, detail="一次最多 200 条，太多了后台会限流")
+
+    ok_ids, failed = [], []
+    for pid in ids:
+        try:
+            res = common.api("api/ProKuan/Delete", data={"ProductID": pid}, method="POST")
+            if res.get("code") == 0:
+                ok_ids.append(pid)
+            else:
+                failed.append({"product_id": pid, "message": res.get("msg") or "后台返回错误"})
+        except common.TokenExpired as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            failed.append({"product_id": pid, "message": str(e)})
+
+    return {"ok": True, "succeeded": len(ok_ids), "failed": failed,
+            "ids": ok_ids, "on_sale": bool(body.get("on_sale"))}
 
 
 @router.post("/kuanpro/sync")

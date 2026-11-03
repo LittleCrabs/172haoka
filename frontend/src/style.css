@@ -1,11 +1,170 @@
+:root {
+  --bg: #f5f7fa;
+  --line: #e9edf3;
+  --radius: 10px;
+  --text-1: #1f2733;
+  --text-2: #5b6577;
+  --text-3: #98a1b3;
+  --brand: #2f6bff;
+  --brand-soft: #eef4ff;
+  --ok: #2fb344;
+}
+
 * { box-sizing: border-box; }
 html, body, #app { height: 100%; margin: 0; padding: 0; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
     'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-  background: #f5f7fa;
-  color: #303133;
+  background: var(--bg);
+  color: var(--text-1);
+  -webkit-font-smoothing: antialiased;
 }
+
 .fill { height: 100%; }
-.muted { color: #909399; font-size: 13px; }
+.muted { color: var(--text-3); font-size: 13px; }
 .spacer { flex: 1; }
+
+/* ---------- 统一的卡片观感 ---------- */
+.el-card {
+  border-radius: var(--radius) !important;
+  border-color: var(--line) !important;
+}
+.el-card__header {
+  padding: 12px 16px !important;
+  border-bottom: 1px solid #f0f2f6 !important;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.el-card__body { padding: 16px; }
+
+/* 筛选/工具栏类卡片：压扁一点，信息更密 */
+.toolbar-card .el-card__body { padding: 10px 14px !important; }
+
+/* ---------- 表格 ---------- */
+.el-table { font-size: 13px; }
+.el-table th.el-table__cell {
+  background: #fafbfc !important;
+  color: var(--text-2) !important;
+  font-weight: 600;
+}
+.el-table .el-table__cell { padding: 9px 0; }
+
+/* 斑马纹统一压到这一档：商品库有、宽带选品没有，扫行时会串；
+   两处都开 stripe，但颜色不能重到抢内容。 */
+.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell {
+  background: #fafbfc;
+}
+.el-table--striped .el-table__body tr.el-table__row--striped:hover td.el-table__cell {
+  background: #f4f7fb;
+}
+
+/* ---------- 数字对齐 ----------
+ * ¥720.00 和 ¥39.5 并排时右边缘参差，是因为比例字体每个数字宽度不同。
+ * 数值列一律等宽数字 + 右对齐，扫一眼就能比大小。 */
+.num-cell,
+.cell-num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+.el-table .is-right .cell { font-variant-numeric: tabular-nums; }
+
+/* ---------- 滚动条 ---------- */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb {
+  background: #d5dae3;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover { background: #c2c9d6; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- Element 主色对齐品牌色 ----------
+ * 只覆盖 .el-button--primary 是不够的：单选按钮（radio-button）、标签、开关、
+ * 复选框、分页等仍会沿用 Element 默认的 #409eff，和侧栏品牌蓝并排就出现
+ * 「同一个页面两种蓝」。这里直接改写 CSS 变量，一处生效、全站统一。
+ */
+:root {
+  --el-color-primary: #2f6bff;
+  --el-color-primary-light-3: #6d97ff;
+  --el-color-primary-light-5: #97b5ff;
+  --el-color-primary-light-7: #c1d3ff;
+  --el-color-primary-light-8: #d5e1ff;
+  --el-color-primary-light-9: #eef4ff;
+  --el-color-primary-dark-2: #2656cc;
+
+  /* 语义色也一起换掉：Element 默认的绿 #67c23a / 橙 #e6a23c / 红 #f56c6c
+     明度偏高，和品牌蓝放一起显脏。这里统一压深一档，成对给全 light-/dark- 变体。 */
+  --el-color-success: #2fb344;
+  --el-color-success-light-3: #6dca7c;
+  --el-color-success-light-5: #97d9a1;
+  --el-color-success-light-7: #c1e8c7;
+  --el-color-success-light-8: #d5f0da;
+  --el-color-success-light-9: #eaf7ec;
+  --el-color-success-dark-2: #268f36;
+
+  --el-color-warning: #e8912d;
+  --el-color-warning-light-3: #efb26c;
+  --el-color-warning-light-5: #f3c896;
+  --el-color-warning-light-7: #f8dec0;
+  --el-color-warning-light-8: #fae9d5;
+  --el-color-warning-light-9: #fdf4ea;
+  --el-color-warning-dark-2: #b97424;
+
+  --el-color-danger: #e5484d;
+  --el-color-danger-light-3: #ec7e82;
+  --el-color-danger-light-5: #f2a3a6;
+  --el-color-danger-light-7: #f7c8c9;
+  --el-color-danger-light-8: #f9dadb;
+  --el-color-danger-light-9: #fceced;
+  --el-color-danger-dark-2: #b7393d;
+
+  --el-color-error: #e5484d;
+  --el-color-error-light-3: #ec7e82;
+  --el-color-error-light-5: #f2a3a6;
+  --el-color-error-light-7: #f7c8c9;
+  --el-color-error-light-8: #f9dadb;
+  --el-color-error-light-9: #fceced;
+  --el-color-error-dark-2: #b7393d;
+
+  --el-color-info: #8a94a6;
+  --el-color-info-light-3: #adb4c0;
+  --el-color-info-light-5: #c4c9d2;
+  --el-color-info-light-7: #dbdee4;
+  --el-color-info-light-8: #e7e9ed;
+  --el-color-info-light-9: #f3f4f6;
+  --el-color-info-dark-2: #6e7684;
+
+  --el-border-radius-base: 8px;
+}
+
+.el-button--primary {
+  --el-button-bg-color: var(--brand);
+  --el-button-border-color: var(--brand);
+  --el-button-hover-bg-color: #4a80ff;
+  --el-button-hover-border-color: #4a80ff;
+  --el-button-active-bg-color: #2453d8;
+  --el-button-active-border-color: #2453d8;
+}
+
+/* 次级按钮（无 type）：边框与文字改用设计令牌，避免默认 #dcdfe6 偏重 */
+.el-button:not([class*="el-button--"]):not(.is-text):not(.is-link) {
+  --el-button-border-color: var(--line);
+  --el-button-text-color: var(--text-2);
+  --el-button-hover-bg-color: var(--brand-soft);
+  --el-button-hover-border-color: #c8d8ff;
+  --el-button-hover-text-color: var(--brand);
+  --el-button-active-bg-color: var(--brand-soft);
+  --el-button-active-border-color: var(--brand);
+}
+
+/* 单选按钮组：未选中描边也收一档 */
+.el-radio-button__inner { font-weight: 500; }
+.el-radio-button:not(.is-active) .el-radio-button__inner {
+  border-color: var(--line);
+  color: var(--text-2);
+}
+.el-radio-button:not(.is-active) .el-radio-button__inner:hover { color: var(--brand); }
+
+.el-tabs__item.is-active { color: var(--brand); }
+.el-tabs__active-bar { background-color: var(--brand); }
+

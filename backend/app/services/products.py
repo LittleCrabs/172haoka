@@ -102,15 +102,20 @@ def to_record(raw, h5=""):
                          if (h5 and raw.get("userSn") and sn) else None,
         "create_time": raw.get("createTime"),  # 原网站商品的添加时间
         "raw_json": json.dumps(raw, ensure_ascii=False),
+        "sync_source": "products",  # 来源标记：下架判定只认"最后一次由本通道见过的商品"
     }
 
 
 def sync(dry_run=False):
+    import uuid
     conn = database.get_conn()
     started = now()
+    ts = started
+    batch_id = "%s_%s" % (ts, uuid.uuid4().hex[:8])
     log_id = None
     if not dry_run:
-        cur = conn.execute("INSERT INTO crawl_log(started_at, status) VALUES (?, 'running')", (started,))
+        cur = conn.execute("INSERT INTO crawl_log(started_at, kind, status) VALUES (?, '手机卡', 'running')",
+                           (started,))
         log_id = cur.lastrowid
         conn.commit()
 
@@ -119,6 +124,14 @@ def sync(dry_run=False):
     except common.TokenExpired as e:
         if log_id:
             conn.execute("UPDATE crawl_log SET finished_at=?, status='token_expired', message=? WHERE id=?",
+                         (now(), str(e), log_id))
+            conn.commit()
+        conn.close()
+        raise
+    except Exception as e:
+        # 不记下来就会永远留一行 status='running'，前端「上次同步」看起来像卡死
+        if log_id:
+            conn.execute("UPDATE crawl_log SET finished_at=?, status='failed', message=? WHERE id=?",
                          (now(), str(e), log_id))
             conn.commit()
         conn.close()
@@ -134,6 +147,7 @@ def sync(dry_run=False):
     recs = [to_record(r, h5) for r in raws]
     seen = {r["product_id"] for r in recs}
     ts = now()
+    batch_id = "%s_%s" % (ts, uuid.uuid4().hex[:8])
     inserted = updated = unchanged = 0
     changes = []
 
@@ -151,7 +165,7 @@ def sync(dry_run=False):
             if diff:
                 updated += 1
                 for f, (o, n) in diff.items():
-                    changes.append((r["product_id"], f, o, n, ts))
+                    changes.append((r["product_id"], f, o, n, ts, batch_id))
                 if not dry_run:
                     sets = ",".join("%s=?" % f for f in r.keys())
                     conn.execute("UPDATE products SET %s, last_seen=?, updated_at=? WHERE product_id=?" % sets,
@@ -159,32 +173,37 @@ def sync(dry_run=False):
             else:
                 unchanged += 1
                 if not dry_run:
-                    conn.execute("UPDATE products SET last_seen=? WHERE product_id=?", (ts, r["product_id"]))
+                    conn.execute("UPDATE products SET last_seen=?, sync_source='products' WHERE product_id=?",
+                                 (ts, r["product_id"]))
 
     # detail_url 依赖 H5 域名，域名会变，但不值得记进变更流水（纯噪音），单独无条件刷新
     if not dry_run and h5:
         conn.executemany("UPDATE products SET detail_url=? WHERE product_id=?",
                          [(r["detail_url"], r["product_id"]) for r in recs if r["detail_url"]])
 
-    # 本次没出现的 → 下架（仅限本批同步覆盖的 category，避免误伤另一路同步的品类）
+    # 本次没出现的 → 下架。只处理 sync_source='products' 的商品：
+    # 宽带选品通道（kuanpro）也在管部分宽带商品，若不区分来源，会把对方拉到、
+    # 而本接口没返回的商品误判成下架（两通道互杀，on_sale 来回乒乓）。
     offsale = 0
     synced_cats = {r["category"] for r in recs}
     if synced_cats:
         placeholders = ", ".join("?" * len(synced_cats))
         olds = conn.execute(
-            "SELECT product_id, on_sale FROM products WHERE category IN (%s)" % placeholders,
+            "SELECT product_id, on_sale FROM products "
+            "WHERE category IN (%s) AND sync_source='products'" % placeholders,
             tuple(synced_cats)).fetchall()
         for o in olds:
             if o["product_id"] not in seen and o["on_sale"] == 1:
                 offsale += 1
-                changes.append((o["product_id"], "on_sale", 1, 0, ts))
+                changes.append((o["product_id"], "on_sale", 1, 0, ts, batch_id))
                 if not dry_run:
                     conn.execute("UPDATE products SET on_sale=0, updated_at=? WHERE product_id=?",
                                  (ts, o["product_id"]))
 
     if not dry_run:
         conn.executemany(
-            "INSERT INTO product_changes(product_id, field, old_value, new_value, changed_at) VALUES (?,?,?,?,?)",
+            "INSERT INTO product_changes(product_id, field, old_value, new_value, changed_at, batch_id) "
+            "VALUES (?,?,?,?,?,?)",
             changes)
         conn.execute("UPDATE crawl_log SET finished_at=?, total=?, inserted=?, updated=?, unchanged=?, "
                      "offsale=?, status='ok' WHERE id=?",
@@ -204,6 +223,17 @@ def sync_stream():
     conn = database.get_conn()
     ts = now()
     batch_id = "%s_%s" % (ts, uuid.uuid4().hex[:8])
+    # 前端「数据同步」页要回答「上次同步什么时候、成功没有」，靠这张表。
+    # 原来这条通道（页面实际走的就是它）一条日志都不写。
+    log_id = None
+    try:
+        cur = conn.execute("INSERT INTO crawl_log(started_at, kind, status) VALUES (?, '手机卡', 'running')",
+                           (ts,))
+        log_id = cur.lastrowid
+        conn.commit()
+    except Exception:
+        log_id = None  # 日志写不进去不能挡住同步本身
+
     try:
         raws, total = fetch_all()
         yield {"type": "start", "total": total}
@@ -237,17 +267,19 @@ def sync_stream():
                                  list(r.values()) + [ts, ts, r["product_id"]])
                 else:
                     unchanged += 1
-                    conn.execute("UPDATE products SET last_seen=? WHERE product_id=?", (ts, r["product_id"]))
+                    conn.execute("UPDATE products SET last_seen=?, sync_source='products' WHERE product_id=?",
+                                 (ts, r["product_id"]))
             if (i + 1) % 20 == 0:
                 yield {"type": "progress", "current": i + 1, "total": len(recs)}
 
-        # 下架（仅限本批同步覆盖的 category，避免误伤另一路同步的品类）
+        # 下架（只处理 sync_source='products' 的商品，避免与宽带选品通道互杀，理由同 sync()）
         offsale = 0
         synced_cats = {r["category"] for r in recs}
         if synced_cats:
             placeholders = ", ".join("?" * len(synced_cats))
             olds = conn.execute(
-                "SELECT product_id, on_sale FROM products WHERE category IN (%s)" % placeholders,
+                "SELECT product_id, on_sale FROM products "
+                "WHERE category IN (%s) AND sync_source='products'" % placeholders,
                 tuple(synced_cats)).fetchall()
             for o in olds:
                 if o["product_id"] not in seen and o["on_sale"] == 1:
@@ -260,13 +292,31 @@ def sync_stream():
             conn.executemany(
                 "INSERT INTO product_changes(product_id, field, old_value, new_value, changed_at, batch_id) "
                 "VALUES (?,?,?,?,?,?)", changes)
+        if log_id:
+            conn.execute("UPDATE crawl_log SET finished_at=?, total=?, inserted=?, updated=?, unchanged=?, "
+                         "offsale=?, status='ok' WHERE id=?",
+                         (now(), len(recs), inserted, updated, unchanged, offsale, log_id))
         conn.commit()
         conn.close()
         yield {"type": "done", "total": len(recs), "inserted": inserted,
                "updated": updated, "unchanged": unchanged, "offsale": offsale}
     except common.TokenExpired as e:
+        _mark_log_failed(conn, log_id, "token_expired", str(e))
         conn.close()
         yield {"type": "error", "error": "token_expired", "message": str(e)}
     except Exception as e:
+        _mark_log_failed(conn, log_id, "failed", str(e))
         conn.close()
         yield {"type": "error", "error": "exception", "message": str(e)}
+
+
+def _mark_log_failed(conn, log_id, status, message):
+    """同步中途失败时把日志行收尾，否则它会一直挂在 running。"""
+    if not log_id:
+        return
+    try:
+        conn.execute("UPDATE crawl_log SET finished_at=?, status=?, message=? WHERE id=?",
+                     (now(), status, message, log_id))
+        conn.commit()
+    except Exception:
+        pass

@@ -1,5 +1,6 @@
 import { createApp } from 'vue'
 import ElementPlus from 'element-plus'
+import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import 'element-plus/dist/index.css'
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import App from './App.vue'
@@ -10,6 +11,8 @@ const app = createApp(App)
 for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
   app.component(key, component)
 }
-app.use(ElementPlus)
+// 中文 locale：不加这一句，分页会显示「Total 155」「50/page」，
+// 中文界面里突然冒英文，一看就是模板残留。
+app.use(ElementPlus, { locale: zhCn })
 app.use(router)
 app.mount('#app')

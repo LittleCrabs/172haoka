@@ -1,10 +1,14 @@
 """问答：检索 → 组装 prompt → 调大模型。单用户（代理商）为主，保留对客口径。"""
-import json
-import time
-import urllib.request
-import urllib.error
 from .. import config, database
 from . import common, retrieve
+from .llm import call_llm
+
+# 多轮记忆：把前几轮问答拼成一段【对话上文】塞进 prompt，不做检索改写。
+# 实际用法是转发客户聊天记录，一次十几二十条就到顶了，留 10 轮足够；
+# 截断是为了控制 token —— 每轮本来还要塞 6 条商品 + 6 条知识库。
+HISTORY_TURNS = 10
+HISTORY_Q_MAX = 300
+HISTORY_A_MAX = 600
 
 SYSTEM_AGENT = """你是 172 号卡代理商的运营助手，服务对象是代理商本人。
 
@@ -17,7 +21,10 @@ SYSTEM_AGENT = """你是 172 号卡代理商的运营助手，服务对象是代
 5. 回答用中文，简洁口语化，像在跟同事说话，不要用"您好，感谢咨询"这类模板腔。
 6. 如果问题本身有歧义（比如没说地区、没说预算），先问一句再答。
 7. 只要推荐或提到具体商品，就必须在该商品后面原样附上它的详情页链接
-   （上下文【商品数据】每条末尾的「详情页：...」），一条都不能省。"""
+   （上下文【商品数据】每条末尾的「详情页：...」），一条都不能省。
+8. 【对话上文】只用来理解「这个 / 那个 / 它 / 还有」指的是什么。
+   商品和资费一律以本轮【商品数据】【知识库片段】为准；
+   上文提到的卡如果本轮资料里没有，就说"这批里没有"，不要凭记忆复述。"""
 
 SYSTEM_CUSTOMER = """你是号卡销售的一线客服，直接回复客户。
 
@@ -30,7 +37,31 @@ SYSTEM_CUSTOMER = """你是号卡销售的一线客服，直接回复客户。
    不要给出任何预计时间或推断结果。
 5. 语气自然亲切但不肉麻，直接说事，不要用"亲""您好，感谢您的咨询"这类模板腔。
 6. 信息不全（没说地区、没说预算、没说用途）时，先问一句再推荐。
-7. 推荐或提到具体商品时，附上它的详情/办理链接（上下文【商品信息】每条末尾的「详情页：...」），方便客户直接点开查看。"""
+7. 推荐或提到具体商品时，附上它的详情/办理链接（上下文【商品信息】每条末尾的「详情页：...」），方便客户直接点开查看。
+8. 【对话上文】只用来理解「这个 / 那个 / 它 / 还有」指的是什么。
+   套餐内容一律以本轮【商品信息】【常见问题】为准，上文说过但本轮资料里没有的，不要重复介绍。"""
+
+
+def _clip(text, n):
+    """压平换行并截断，避免历史里的长回答把上下文撑爆。"""
+    s = " ".join((text or "").split())
+    return s if len(s) <= n else s[:n] + "…"
+
+
+def format_history(history):
+    """把前端的 turns 整理成【对话上文】文本块，返回 (文本, 实际轮数)。"""
+    if not history:
+        return "", 0
+    rows = []
+    for h in history[-HISTORY_TURNS:]:
+        if not isinstance(h, dict):
+            continue
+        q = _clip(h.get("q"), HISTORY_Q_MAX)
+        if not q:
+            continue
+        a = _clip(h.get("a"), HISTORY_A_MAX)
+        rows.append("用户：%s\n你：%s" % (q, a or "（未回答）"))
+    return "\n\n".join(rows), len(rows)
 
 
 def build_context(q, k=6, audience="agent"):
@@ -101,85 +132,46 @@ def build_context(q, k=6, audience="agent"):
     return "\n\n".join(parts) or "（没有检索到相关资料）", prods, chunks
 
 
-def call_llm(messages, cfg=None):
-    L = cfg or config.llm_cfg()
-    base = (L.get("base_url") or "").rstrip("/")
-    body = {
-        "model": L.get("model"),
-        "messages": messages,
-        "temperature": L.get("temperature", 0.3),
-        "max_tokens": L.get("max_tokens", 1200),
-    }
-    extra = L.get("extra")
-    if isinstance(extra, dict):
-        body.update(extra)
-    headers = {"Content-Type": "application/json",
-               "Authorization": "Bearer " + L.get("api_key", "")}
-    last_err = None
-    for attempt in range(4):
-        req = urllib.request.Request(
-            base + "/chat/completions",
-            data=json.dumps(body).encode(),
-            headers=headers,
-            method="POST")
-        try:
-            with common.urlopen_direct(req, timeout=120) as r:
-                raw = r.read()
-                if r.headers.get("Content-Encoding") == "gzip":
-                    import gzip
-                    raw = gzip.decompress(raw)
-            return json.loads(raw.decode())["choices"][0]["message"]["content"]
-        except urllib.error.HTTPError as e:
-            last_err = e
-            if e.code == 429 or 500 <= e.code < 600:
-                wait = min(8.0, 1.0 * (2 ** attempt))
-                ra = e.headers.get("Retry-After")
-                if ra and str(ra).isdigit():
-                    wait = float(ra)
-                if attempt < 3:
-                    time.sleep(wait)
-                    continue
-            raise
-    raise last_err
-
-
-def ask(q, dry_run=False, audience="agent"):
-    system = SYSTEM_CUSTOMER if audience == "customer" else SYSTEM_AGENT
-    ctx, prods, chunks = build_context(q, audience=audience)
-    user = "%s：%s\n\n%s" % ("客户问题" if audience == "customer" else "代理商问题", q, ctx)
+def ask(q, dry_run=False, audience="agent", history=None):
+    system, user, sources, meta = build_prompt(q, audience, history)
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-
-    sources = []
-    to_customer = audience == "customer"
-    for i, r in enumerate(prods, 1):
-        url = r["exclusive_url"] if to_customer else r["detail_url"]
-        sources.append({"type": "product", "ref": "P%d" % i, "title": r["product_name"],
-                        "detail_url": url})
-    for i, h in enumerate(chunks, 1):
-        sources.append({"type": "kb", "ref": "K%d" % i,
-                        "title": h["row"]["title"], "heading": h["row"]["heading"]})
 
     if not config.llm_cfg().get("api_key"):
         return {"answer": "", "sources": sources,
                 "error": "未配置大模型（请在设置页填写 LLM 的 base_url / model / api_key）",
-                "prompt": {"system": system, "user": user}}
+                "prompt": {"system": system, "user": user}, **meta}
     if dry_run:
         # dry_run 仅用于预览检索上下文，不调大模型、不消耗 token
         return {"answer": "", "sources": sources, "error": "",
-                "prompt": {"system": system, "user": user}}
+                "prompt": {"system": system, "user": user}, **meta}
 
     try:
         answer = call_llm(messages)
     except Exception as e:
-        return {"answer": "", "sources": sources, "error": str(e)}
-    return {"answer": answer, "sources": sources, "error": ""}
+        return {"answer": "", "sources": sources, "error": str(e), **meta}
+    return {"answer": answer, "sources": sources, "error": "", **meta}
 
 
-def build_prompt(q, audience="agent"):
-    """构建 system / user / sources，供流式接口复用。"""
+def build_prompt(q, audience="agent", history=None):
+    """构建 system / user / sources，供流式接口复用。
+
+    history 是前几轮的 [{q, a}]，拼成【对话上文】放在本轮问题前面，
+    让模型知道「这个 / 那个 / 还有」指什么。检索仍按本轮问题走，不多调模型。
+    返回 (system, user, sources, meta)。
+    """
     system = SYSTEM_CUSTOMER if audience == "customer" else SYSTEM_AGENT
+    hist_text, turns = format_history(history)
+
     ctx, prods, chunks = build_context(q, audience=audience)
-    user = "%s：%s\n\n%s" % ("客户问题" if audience == "customer" else "代理商问题", q, ctx)
+    label = "客户问题" if audience == "customer" else "代理商问题"
+
+    blocks = []
+    if hist_text:
+        blocks.append("【对话上文】\n" + hist_text)
+    blocks.append("%s：%s" % (label, q))
+    blocks.append(ctx)
+    user = "\n\n".join(blocks)
+
     sources = []
     to_customer = audience == "customer"
     for i, r in enumerate(prods, 1):
@@ -189,40 +181,5 @@ def build_prompt(q, audience="agent"):
     for i, h in enumerate(chunks, 1):
         sources.append({"type": "kb", "ref": "K%d" % i,
                         "title": h["row"]["title"], "heading": h["row"]["heading"]})
-    return system, user, sources
-
-
-def call_llm_stream(messages, cfg=None):
-    """流式调用大模型，逐段 yield 文本增量（OpenAI 兼容 SSE）。"""
-    L = cfg or config.llm_cfg()
-    base = (L.get("base_url") or "").rstrip("/")
-    body = {
-        "model": L.get("model"),
-        "messages": messages,
-        "temperature": L.get("temperature", 0.3),
-        "max_tokens": L.get("max_tokens", 1200),
-        "stream": True,
-    }
-    extra = L.get("extra")
-    if isinstance(extra, dict):
-        body.update(extra)
-    headers = {"Content-Type": "application/json",
-               "Authorization": "Bearer " + L.get("api_key", "")}
-    req = urllib.request.Request(base + "/chat/completions",
-                                 data=json.dumps(body).encode(),
-                                 headers=headers, method="POST")
-    with common.urlopen_direct(req, timeout=120) as r:
-        for raw in r:
-            line = raw.decode("utf-8", "replace").strip()
-            if not line or not line.startswith("data:"):
-                continue
-            data = line[5:].strip()
-            if data == "[DONE]":
-                break
-            try:
-                obj = json.loads(data)
-                delta = obj["choices"][0]["delta"].get("content")
-                if delta:
-                    yield delta
-            except Exception:
-                continue
+    meta = {"history_turns": turns}
+    return system, user, sources, meta

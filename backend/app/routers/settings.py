@@ -2,10 +2,22 @@
 import base64
 from fastapi import APIRouter, Body, HTTPException
 from .. import config, database
-from ..services import common, ask as ask_svc
+from ..services import common, llm as llm_svc
 from ..presets import PRESETS_LLM, PRESETS_EMBED
 
 router = APIRouter(prefix="/api", tags=["settings"])
+
+
+def _normalize(c):
+    """兼容旧配置：向量模型曾用 embedding 作键名，统一映射为 embed（供前端读写）。
+
+    映射后丢掉旧键——否则 _mask 只脱敏 embed，embedding 里的 api_key 会明文回传前端。
+    """
+    c = dict(c)
+    if "embed" not in c and isinstance(c.get("embedding"), dict):
+        c["embed"] = c["embedding"]
+    c.pop("embedding", None)
+    return c
 
 
 def _mask(cfg):
@@ -23,13 +35,13 @@ def _mask(cfg):
 
 @router.get("/settings")
 def get_settings():
-    return {"config": _mask(config.load_config()),
+    return {"config": _mask(_normalize(config.load_config())),
             "presets": {"llm": PRESETS_LLM, "embed": PRESETS_EMBED}}
 
 
 @router.post("/settings")
 def save_settings(body: dict = Body(...)):
-    cur = config.load_config()
+    cur = _normalize(config.load_config())
     for top in ("llm", "embed"):
         if top in body and isinstance(body[top], dict):
             d = dict(cur.get(top, {}))
@@ -40,6 +52,12 @@ def save_settings(body: dict = Body(...)):
             cur[top] = d
     if "audience" in body:
         cur["audience"] = body["audience"]
+    # 小红书判定配置（阈值 / 权重 / 人格）：与 llm 一样按键覆盖，
+    # 前端只传改动的部分也不会把其余字段抹掉
+    if isinstance(body.get("xhs"), dict):
+        d = dict(cur.get("xhs") or {})
+        d.update(body["xhs"])
+        cur["xhs"] = d
     # 网络代理 / 后台站点等顶层字段
     for field in ("proxy", "api", "site", "note"):
         if field in body:
@@ -63,7 +81,7 @@ def test_llm(body: dict = Body(...)):
     if not (cfg.get("base_url") and cfg.get("model") and cfg.get("api_key")):
         raise HTTPException(status_code=400, detail="还没填完整的 LLM 配置")
     try:
-        ans = ask_svc.call_llm([
+        ans = llm_svc.call_llm([
             {"role": "system", "content": "你是测试助手，只回复'可用'两个字。"},
             {"role": "user", "content": "ping"},
         ], cfg)

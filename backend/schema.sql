@@ -153,6 +153,30 @@ CREATE TABLE IF NOT EXISTS xhs_replies (
     score        INTEGER,
     tone         TEXT,               -- 本次使用的人格话术
     reply_text   TEXT,
-    replied_at   TEXT
+    replied_at   TEXT,
+    -- 评论真正发出去的时间（机器人发送成功后才回填）。
+    -- replied_at 只代表「后端生成了回复」，dry 试跑也会写；两者必须分开，
+    -- 否则页面上无法区分「已生成」和「已发送」，会误以为评论已经发出去了。
+    delivered_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_xhs_replied_at ON xhs_replies(replied_at);
+
+-- ---------- 机器人运行记录（跨进程/跨重启的状态来源） ----------
+-- 以前「这一轮在不在跑」只存在后端内存里，后端一重启就忘，可能启动第二个 Chrome。
+-- 这里落库：启动时插一行 state='running'，进程结束后回填 returncode / finished_at。
+CREATE TABLE IF NOT EXISTS bot_runs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform      TEXT NOT NULL DEFAULT 'xhs',  -- 预留多平台（dy / bili …）
+    pid           INTEGER,
+    pid_create_ts REAL,        -- 进程创建时间（epoch 秒），用于防 PID 复用误判
+    started_at    TEXT NOT NULL,
+    finished_at   TEXT,
+    state         TEXT NOT NULL DEFAULT 'running',  -- running/done/failed/stale/unknown
+    returncode    INTEGER,
+    params        TEXT,        -- 本轮参数 JSON
+    log_path      TEXT
+);
+-- 同一平台同时只允许一行 running：多 worker / 多次误点也拦得住（靠数据库唯一约束）
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_bot_run_running
+    ON bot_runs(platform) WHERE state='running';
+CREATE INDEX IF NOT EXISTS idx_bot_runs_platform ON bot_runs(platform, id DESC);

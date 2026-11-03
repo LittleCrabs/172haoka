@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import database, config
 from .schemas import StateOut
-from .routers import products, kb, ask, settings, kuanpro, xhs
+from .routers import products, kb, ask, settings, kuanpro, xhs, meta
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR.parent / "frontend" / "dist"
@@ -34,6 +34,7 @@ app.include_router(kb.router)
 app.include_router(ask.router)
 app.include_router(xhs.router)
 app.include_router(settings.router)
+app.include_router(meta.router)
 
 
 @app.get("/api/state", response_model=StateOut)

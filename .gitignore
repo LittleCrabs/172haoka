@@ -11,3 +11,27 @@ build/
 .DS_Store
 *.log
 .git/index.lock
+
+# ---- 本地凭据与数据：绝不提交 ----
+# backend/config.json 含 172 号卡后台明文密码 + LLM/embedding 的 api_key
+backend/config.json
+# token.json 是后台登录 token（7 天有效）
+token.json
+# 数据库含商品、佣金、客户与小红书回复记录
+data/*.db
+data/*.json
+data/*.png
+docs/_*.png
+
+# ---- 本地缓存 / 运行产物 ----
+# Playwright 浏览器用户目录，含小红书登录 cookie，约 481MB
+.chrome-xhs/
+.chrome-*/
+.workbuddy/
+xhs_bot_log.jsonl
+# 机器人历史备份（含帖子原文与运营记录）
+data/xhs_bot*
+# 稿件恢复用的临时草稿
+docs/_user_draft_*
+# 本地界面审查产物
+docs/ui-review.html

@@ -69,25 +69,38 @@ def parse_constraints(q):
 
 
 def product_rows(c, limit=10):
-    where, args = ["p.category = ?"], [c.get("category", "手机卡")]
+    category = c.get("category") or "手机卡"
+    is_bb = category == "宽带"
+    where, args = ["p.category = ?"], [category]
     if c.get("operator"):
         where.append("p.operator = ?")
         args.append(c["operator"])
-    if c.get("max_fee"):
-        where.append("p.monthly_fee <= ?")
-        args.append(c["max_fee"])
-    if c.get("min_data"):
-        where.append("p.data_gb >= ?")
-        args.append(c["min_data"])
+    # 宽带没有结构化的月租 / 流量字段（资费都写在商品名里，如「79元/月」「600元/年」），
+    # 套用 max_fee / min_data 数值过滤会把结果直接筛成 0 条，故对宽带跳过。
+    if not is_bb:
+        if c.get("max_fee"):
+            where.append("p.monthly_fee <= ?")
+            args.append(c["max_fee"])
+        if c.get("min_data"):
+            where.append("p.data_gb >= ?")
+            args.append(c["min_data"])
     if c.get("region"):
-        # 「在杭州」= 能在杭州办 → 排除禁发地区含杭州/浙江的卡（不是去找名字带杭州的卡）
         reg = c["region"]
         prov = CITY_PROVINCE.get(reg, reg)
-        where.append("(p.disable_area IS NULL OR p.disable_area = '' OR "
-                     "(p.disable_area NOT LIKE ? AND p.disable_area NOT LIKE ?))")
-        args += ["%" + reg + "%", "%" + prov + "%"]
+        if is_bb:
+            # 宽带的可办地区存在 area 字段（「江西」「成都」「山东-东营」），不是禁发地区
+            where.append("(p.area LIKE ? OR p.area LIKE ?)")
+            args += ["%" + reg + "%", "%" + prov + "%"]
+        else:
+            # 「在杭州」= 能在杭州办 → 排除禁发地区含杭州/浙江的卡（不是去找名字带杭州的卡）
+            where.append("(p.disable_area IS NULL OR p.disable_area = '' OR "
+                         "(p.disable_area NOT LIKE ? AND p.disable_area NOT LIKE ?))")
+            args += ["%" + reg + "%", "%" + prov + "%"]
     where.append("p.on_sale = 1")
-    if c.get("sort") == "fee_asc":
+    if is_bb:
+        # 先用地区精确匹配度排序，再按佣金：area 越短（越接近省市）越相关
+        order = "ORDER BY LENGTH(p.area), p.commission DESC"
+    elif c.get("sort") == "fee_asc":
         order = "ORDER BY (p.monthly_fee IS NULL), p.monthly_fee ASC, p.data_gb DESC"
     elif c.get("min_data"):
         order = "ORDER BY p.data_gb DESC, (p.monthly_fee IS NULL), p.monthly_fee ASC"
@@ -102,7 +115,8 @@ def product_rows(c, limit=10):
 
 
 PRODUCT_HINTS = ("推荐", "办卡", "选卡", "哪款", "哪张", "哪个好", "有什么好",
-                 "多少钱", "月租", "便宜", "资费", "划算")
+                 "多少钱", "月租", "便宜", "资费", "划算",
+                 "宽带", "带宽", "装宽", "兆")
 
 
 def has_product_intent(q):

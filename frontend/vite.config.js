@@ -5,7 +5,9 @@ import vue from '@vitejs/plugin-vue'
 export default defineConfig({
   plugins: [vue()],
   server: {
+    host: '127.0.0.1',   // 显式绑 IPv4：否则 Vite 只监听 ::1，127.0.0.1 访问不到
     port: 5173,
+    strictPort: true,
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:8123',
