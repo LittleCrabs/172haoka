@@ -68,6 +68,9 @@ cd haoka/backend
 ## 配置位置（重要）
 
 - 真实配置在 **`backend/config.json`**（不是旧版根目录那份，根目录旧 config 已删除）。
+- **仓库里不含 `backend/config.json`**：它保存后台密码与 API key，已列入 `.gitignore`。
+  首次部署把 `backend/config.example.json` 复制成 `backend/config.json`，填入账号与 key 即可。
+  同理 `token.json`（后台登录缓存）和 `data/haoka.db`（业务数据）也不入库。
 - 后端读取 `backend/config.json`；前端设置页的保存也写到这里。
 - `/api/settings` 返回时会对 `password` 与 `api_key` 脱敏（`***已配置***`）；
   前端留空不填即表示"不改原值"。
